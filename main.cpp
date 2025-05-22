@@ -218,8 +218,7 @@ void inline handle_row(std::string_view row,table_info & table,char * buffer,siz
 
 
 void processFile(const std::string  & filename, const std::string  & outputFilename){
-    //читаем файл по 64 кбайта.
-    //в вектор вставляем вью на каждую строку
+
     auto s1 =  std::chrono::high_resolution_clock::now();
 
     std::chrono::milliseconds vectorDur(0);
