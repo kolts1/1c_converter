@@ -7,8 +7,9 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <charconv>
 
-constexpr size_t BUFFER_SIZE = 1024 * 1024;
+constexpr size_t BUFFER_SIZE = 64 * 1024;
 
 using namespace std::chrono;
 
@@ -53,28 +54,60 @@ struct table_info {
     column * currentColumn;
 };
 
-void inline handleAndWriteleData(const table_info & table,char * buffer,std::string_view type,std::string_view data,size_t pos){
+int to_int(std::string_view sv) {
+    int value;
+    auto result = std::from_chars(sv.data(), sv.data() + sv.size(), value);
+    if (result.ec != std::errc()) throw std::runtime_error("from_chars error");
+    return value;
+}
+
+
+
+void inline handleAndWriteleData(const table_info & table,char * buffer,std::string_view type,std::string_view data,size_t &pos){
     //обработка данных перед записью
+    if(type == "D"){
 
+        if (data.size() < 14) throw std::runtime_error("Too short timestamp");
 
-    //запись
-    memcpy(buffer,data.data(),data.length());
+        int year = to_int(data.substr(0, 4));
+        int month = to_int(data.substr(4, 2));
+        int day = to_int(data.substr(6, 2));
+        int hour = to_int(data.substr(8, 2));
+        int minute = to_int(data.substr(10, 2));
+        int second = to_int(data.substr(12, 2));
 
+        auto len = std::snprintf(buffer, 33, "%04d-%02d-%02d %02d:%02d:%02d",
+                                year, month, day, hour, minute, second);
+        pos += len;
+    } else {
+        //запись
+        memcpy(buffer, data.data(), data.length());
+        pos += data.length();
+    }
 }
 
 void inline handleColumnData(std::string_view row,table_info & table,char * buffer,size_t &pos){
 
-    auto commaIndexOf = row.find(',');
-    auto bracketIndexOf = row.find('}');
-    auto type = row.substr(2,1);
+    if (row.substr(0,6) == "{\"L\"},") {
 
+    } else {
 
-    auto data =
-            row.substr(commaIndexOf + 1,row.length() - commaIndexOf - row.length() + bracketIndexOf - 1);
+        //auto comma_count= std::count(row.begin(), row.end(), ',');
+        auto type = row.substr(2, 1);
+        auto commaIndexOf = row.find(',');
+        if (type == "#") {
+            commaIndexOf = row.substr(5).find(',') + 5;
+        }
 
-    handleAndWriteleData(table,buffer + pos, type, data, pos);
+        auto bracketIndexOf = row.find('}');
 
-    pos += data.length();
+        auto data =
+                row.substr(commaIndexOf + 1, row.length() - commaIndexOf - row.length() + bracketIndexOf - 1);
+
+        handleAndWriteleData(table, buffer + pos, type, data, pos);
+
+        //pos += data.length();
+    }
     if(table.current_column_index < table.column_count - 1){
         buffer[pos] = '\t';
         pos++;
@@ -196,13 +229,13 @@ void inline handle_row(std::string_view row,table_info & table,char * buffer,siz
         table.passed_position = table_info::ColumnData;
 
     } else if (table.passed_position == table_info::ColumnData) {
-            handleColumnData(row, table, buffer, pos);
-            if(table.current_column_index == table.column_count){
-                table.current_column_index = 0;
-                table.passed_position = table_info::RowDefinitionEnd;
-            } else {
-                table.passed_position = table_info::ColumnData;
-            }
+        handleColumnData(row, table, buffer, pos);
+        if(table.current_column_index == table.column_count){
+            table.current_column_index = 0;
+            table.passed_position = table_info::RowDefinitionEnd;
+        } else {
+            table.passed_position = table_info::ColumnData;
+        }
     } else if (table.passed_position == table_info::RowDefinitionEnd) {
         if (row.substr(0, 2) == "},") {
             table.passed_position = table_info::RowsDefinitionEnd;
@@ -218,7 +251,8 @@ void inline handle_row(std::string_view row,table_info & table,char * buffer,siz
 
 
 void processFile(const std::string  & filename, const std::string  & outputFilename){
-
+    //читаем файл по 64 кбайта.
+    //в вектор вставляем вью на каждую строку
     auto s1 =  std::chrono::high_resolution_clock::now();
 
     std::chrono::milliseconds vectorDur(0);
@@ -264,7 +298,7 @@ void processFile(const std::string  & filename, const std::string  & outputFilen
             end++;
             handle_row(std::string_view(readBuffer + start, end),table,writeBuffer,writePos);
             if(table.current_row_index == table.rows_count
-            &&table.rows_count > 0){
+               &&table.rows_count > 0){
                 break;
             }
             if(start + 1 >= dataSize){
@@ -278,12 +312,10 @@ void processFile(const std::string  & filename, const std::string  & outputFilen
     }
     std::cout<<"Записано "<<table.rows_count<<" строк"<<std::endl;
     std::cout<<"Общее время: "<<duration_cast<milliseconds>(high_resolution_clock::now() - s1).count() / 1000.00<<" секунд"<<std::endl;
-    
+
 }
 
-
 int main(int argc,char * argv[]) {
-
     if(argc == 2){
         std::filesystem::path firstFile = argv[1];
 
@@ -293,7 +325,7 @@ int main(int argc,char * argv[]) {
                     for (const auto& entry : std::filesystem::recursive_directory_iterator(firstFile)) {
                         if (std::filesystem::is_regular_file(entry.path())) {
                             auto outFile = entry.path().parent_path() / entry.path().stem();
-                            processFile(entry.path(),outFile.string() +  + ".csv");
+                            processFile(entry.path().string(),outFile.string() +  + ".csv");
                         }
                     }
                 } catch (const std::filesystem::filesystem_error& e) {
@@ -301,7 +333,7 @@ int main(int argc,char * argv[]) {
                 }
             } else { //выбран 1 файл
                 auto outFile = firstFile.parent_path() / firstFile.stem();
-                processFile(firstFile,outFile.string() +  + ".csv");
+                processFile(firstFile.string(),outFile.string() +  + ".csv");
             }
         }
     } else if(argc == 3){
@@ -314,19 +346,19 @@ int main(int argc,char * argv[]) {
                     std::cout<<"Неправильное расширение выходного файла";
                     exit(1);
                 }
-                processFile(std::filesystem::path(firstFile),std::filesystem::path(secondFile));
+                processFile(std::filesystem::path(firstFile).string(),std::filesystem::path(secondFile).string());
             } else
             if(std::filesystem::is_regular_file(firstFile) && std::filesystem::is_directory(secondFile)){
                 auto outFile =  (std::filesystem::path(secondFile) /
-                        std::filesystem::path(firstFile).stem()).string() + ".csv" ;
-                processFile(std::filesystem::path(firstFile),outFile);
+                                 std::filesystem::path(firstFile).stem()).string() + ".csv" ;
+                processFile(std::filesystem::path(firstFile).string(),outFile);
             } else
             if(std::filesystem::is_directory(firstFile) && std::filesystem::is_directory(secondFile)){
                 try {
                     for (const auto& entry : std::filesystem::recursive_directory_iterator(firstFile)) {
                         if (std::filesystem::is_regular_file(entry.path())) {
                             auto outFile = entry.path().parent_path() / entry.path().stem();
-                            processFile(entry.path(),outFile.string() +  + ".csv");
+                            processFile(entry.path().string(),outFile.string() +  + ".csv");
                         }
                     }
                 } catch (const std::filesystem::filesystem_error& e) {
